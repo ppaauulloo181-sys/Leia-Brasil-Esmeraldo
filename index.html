@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="pt-br">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Biblioteca Escolar — Empréstimos</title>
+    <meta name="description" content="Sistema de empréstimo escolar com 710 livros brasileiros, inventário e registros." />
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="min-h-screen bg-slate-50 text-slate-900">
+    <div id="root" class="min-h-screen"></div>
+
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+
+// ---------- Data generation (710 books) ----------
+const BR_GENRES = ["Romance","Conto","Crônica","Poesia","Suspense","Fantasia","Ficção Histórica","Infantojuvenil","Não-ficção","Biografia","Ensaios","Drama"];
+const BR_AUTHORS = ["Machado de Assis","Clarice Lispector","Jorge Amado","Graciliano Ramos","Guimarães Rosa","Lygia Fagundes Telles","Carolina Maria de Jesus","Cecília Meireles","Rubem Fonseca","Lima Barreto","Rachel de Queiroz","Ferreira Gullar","Ariano Suassuna","Raduan Nassar","Conceição Evaristo","Milton Hatoum"];
+const TITLES_BASE = ["Memórias Póstumas","Quarto de Despejo","Vidas Secas","A Hora da Estrela","Grande Sertão","Capitães da Areia","Macunaíma","O Cortiço","São Bernardo","Iracema","Dom Casmurro","Sagarana","Morte e Vida Severina","Laços de Família","Dois Irmãos","O Quinze","O Nome do Riso","A Paixão Segundo","Um Copo de Cólera","Auto da Compadecida"];
+
+function randFrom(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+function generateBooks(n=710){
+  const a = [];
+  for(let i=1;i<=n;i++){
+    const titulo = `${randFrom(TITLES_BASE)} — Edição Escolar #${i}`;
+    const autor = randFrom(BR_AUTHORS);
+    const genero = randFrom(BR_GENRES);
+    const ano = 1940 + Math.floor(Math.random()*85);
+    const paginas = 80 + Math.floor(Math.random()*400);
+    const stock = 1 + Math.floor(Math.random()*5); // 1-5 cópias
+    const id = String(i).padStart(4,"0");
+    const capa = `https://picsum.photos/seed/escolab-${i}/240/360`;
+    const sinopse = `Edição escolar de ${titulo}. ${genero} de ${autor}.`;
+    a.push({ id, titulo, autor, genero, ano, paginas, cap: capa, sinopse, stock });
+  }
+  return a;
+}
+
+// ---------- Simple storage ----------
+const storage = {
+  get(k, fallback){ try{ const v = localStorage.getItem(k); return v ? JSON.parse(v) : fallback; }catch{ return fallback; } },
+  set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch{} },
+};
+
+// ---------- Helpers ----------
+function formatDate(d){
+  if(!d) return "";
+  const dt = new Date(d);
+  return dt.toLocaleDateString();
+}
+function daysBetween(a,b){
+  const MS = 24*60*60*1000;
+  return Math.ceil((new Date(b).setHours(0,0,0,0) - new Date(a).setHours(0,0,0,0)) / MS);
+}
+
+// ---------- App ----------
+function App(){
+  const [books, setBooks] = useState(() => storage.get("school_books", null) || generateBooks());
+  const [loans, setLoans] = useState(() => storage.get("school_loans", []));
+  const [route, setRoute] = useState("catalog"); // catalog | book | admin | loans
+  const [selected, setSelected] = useState(null); // selected book id
+  const [query, setQuery] = useState("");
+  const [onlyAvailable, setOnlyAvailable] = useState(false);
+
+  useEffect(() => { storage.set("school_books", books); }, [books]);
+  useEffect(() => { storage.set("school_loans", loans); }, [loans]);
+
+  // Catalog filter
+  const filtered = useMemo(()=>{
+    let res = books;
+    if(query.trim()){
+      const t = query.toLowerCase();
+      res = res.filter(b=> b.titulo.toLowerCase().includes(t) || b.autor.toLowerCase().includes(t) || b.genero.toLowerCase().includes(t));
+    }
+    if(onlyAvailable) res = res.filter(b => b.stock > 0);
+    return res;
+  }, [books, query, onlyAvailable]);
+
+  // Loan actions
+  function checkout(bookId, borrowerName, borrowerId, dueDate){
+    setBooks(prev => prev.map(b => b.id===bookId ? {...b, stock: Math.max(0, b.stock-1)} : b));
+    const record = {
+      id: "L" + Date.now(),
+      bookId,
+      borrowerName,
+      borrowerId,
+      start: new Date().toISOString(),
+      due: dueDate,
+      returned: null,
+      notes: ""
+    };
+    setLoans(prev => [record, ...prev]);
+  }
+  function checkin(loanId){
+    const loan = loans.find(l=>l.id===loanId);
+    if(!loan) return;
+    setLoans(prev => prev.map(l => l.id===loanId ? {...l, returned: new Date().toISOString()} : l));
+    setBooks(prev => prev.map(b => b.id===loan.bookId ? {...b, stock: b.stock+1} : b));
+  }
+  function cancelLoan(loanId){
+    const loan = loans.find(l=>l.id===loanId);
+    if(!loan) return;
+    // restore stock only if not yet returned
+    if(!loan.returned){
+      setBooks(prev => prev.map(b => b.id===loan.bookId ? {...b, stock: b.stock+1} : b));
+    }
+    setLoans(prev => prev.filter(l=>l.id!==loanId));
+  }
+
+  // Admin operations
+  function changeStock(bookId, delta){
+    setBooks(prev => prev.map(b => b.id===bookId ? {...b, stock: Math.max(0, b.stock + delta)} : b));
+  }
+  function addBook(manual){
+    const id = String( (parseInt(books[books.length-1]?.id || "0") + 1) ).padStart(4,"0");
+    const newBook = { id, titulo: manual.titulo || "Livro novo", autor: manual.autor || "Autor", genero: manual.genero || "Não-ficção", ano: manual.ano || 2024, paginas: manual.paginas||100, cap: manual.cap || "https://picsum.photos/240/360", sinopse: manual.sinopse||"", stock: manual.stock || 1 };
+    setBooks(prev => [newBook, ...prev]);
+  }
+
+  // Export CSV
+  function exportLoansCSV(){
+    const header = ["id","bookId","bookTitle","borrowerName","borrowerId","start","due","returned","notes"];
+    const rows = loans.map(l => {
+      const book = books.find(b=>b.id===l.bookId);
+      return [l.id, l.bookId, (book?book.titulo:"-"), l.borrowerName, l.borrowerId, l.start, l.due, l.returned || "", l.notes || ""];
+    });
+    const csv = [header, ...rows].map(r => r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "loans.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // Import sample: reset and load fresh 710 books
+  function resetSample(){
+    if(!confirm("Recriar amostra com 710 livros e limpar empréstimos?")) return;
+    const fresh = generateBooks(710);
+    setBooks(fresh);
+    setLoans([]);
+    setRoute("catalog");
+  }
+
+  return (
+    <div className="min-h-screen">
+      <nav className="bg-white border-b sticky top-0 z-40">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-4">
+          <div className="text-xl font-bold">Biblioteca Escolar</div>
+          <div className="ml-4 flex gap-2">
+            <button className={"px-3 py-1 rounded "+(route==="catalog"? "bg-sky-600 text-white":"text-slate-700")} onClick={()=>setRoute("catalog")}>Catálogo</button>
+            <button className={"px-3 py-1 rounded "+(route==="loans"? "bg-sky-600 text-white":"text-slate-700")} onClick={()=>setRoute("loans")}>Empréstimos ({loans.filter(l=>!l.returned).length})</button>
+            <button className={"px-3 py-1 rounded "+(route==="admin"? "bg-sky-600 text-white":"text-slate-700")} onClick={()=>setRoute("admin")}>Admin</button>
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Buscar por título/autor/gênero" className="px-3 py-2 border rounded w-72" />
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={onlyAvailable} onChange={e=>setOnlyAvailable(e.target.checked)} /> Apenas disponíveis</label>
+            <button className="px-3 py-1 rounded bg-emerald-600 text-white" onClick={resetSample}>Recriar amostra</button>
+          </div>
+        </div>
+      </nav>
+
+      <main className="max-w-6xl mx-auto p-4">
+        {route==="catalog" && (
+          <CatalogView books={filtered} onOpen={id=>{ setSelected(id); setRoute("book"); }} />
+        )}
+
+        {route==="book" && selected && (
+          <BookDetail book={books.find(b=>b.id===selected)} onBack={()=>setRoute("catalog")} onCheckout={(bookId, borrowerName, borrowerId, dueDate)=>{ checkout(bookId, borrowerName, borrowerId, dueDate); alert('Empréstimo registrado'); setRoute('loans'); }} onChangeStock={changeStock} />
+        )}
+
+        {route==="loans" && (
+          <LoansView loans={loans} books={books} onCheckin={checkin} onCancel={cancelLoan} onExportCSV={exportLoansCSV} />
+        )}
+
+        {route==="admin" && (
+          <AdminView books={books} addBook={addBook} changeStock={changeStock} resetSample={resetSample} setRoute={setRoute} />
+        )}
+      </main>
+
+      <footer className="text-center text-sm text-slate-500 py-8">Protótipo - dados em localStorage • Desenvolvido para uso escolar</footer>
+    </div>
+  );
+}
+
+// ---------- Views ----------
+function CatalogView({ books, onOpen }){
+  return (
+    <div>
+      <h2 className="text-2xl font-semibold mb-4">Catálogo — {books.length} livros</h2>
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+        {books.map(b => (
+          <div key={b.id} className="bg-white rounded-lg shadow p-3 flex flex-col">
+            <img src={b.cap} className="h-40 object-cover rounded" alt="" />
+            <div className="mt-2 flex-1">
+              <div className="font-medium">{b.titulo}</div>
+              <div className="text-sm text-slate-600">{b.autor}</div>
+              <div className="text-xs text-slate-500">{b.genero} • {b.ano} • {b.paginas} págs.</div>
+            </div>
+            <div className="mt-2 flex items-center justify-between">
+              <div className={"px-2 py-1 rounded text-xs "+(b.stock>0? "bg-emerald-100 text-emerald-700":"bg-rose-100 text-rose-700")}>{b.stock} cópia(s)</div>
+              <div className="flex gap-2">
+                <button className="px-2 py-1 text-sm border rounded" onClick={()=>onOpen(b.id)}>Detalhes</button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BookDetail({ book, onBack, onCheckout, onChangeStock }){
+  const [borrowerName, setBorrowerName] = useState("");
+  const [borrowerId, setBorrowerId] = useState("");
+  const [dueDate, setDueDate] = useState(()=> new Date(Date.now()+7*24*3600*1000).toISOString().slice(0,10));
+
+  if(!book) return <div>Livro não encontrado. <button onClick={onBack} className="underline">Voltar</button></div>;
+
+  return (
+    <div className="space-y-4">
+      <button onClick={onBack} className="text-sm text-slate-600 underline">← Voltar ao catálogo</button>
+      <div className="flex gap-6">
+        <img src={book.cap} className="w-48 h-64 object-cover rounded shadow" alt="" />
+        <div className="flex-1">
+          <h3 className="text-xl font-semibold">{book.titulo}</h3>
+          <div className="text-slate-600">{book.autor}</div>
+          <div className="mt-2 text-sm text-slate-500">{book.genero} • {book.ano} • {book.paginas} págs.</div>
+          <p className="mt-4 text-sm text-slate-700">{book.sinopse}</p>
+
+          <div className="mt-6 grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-sm block text-slate-600">Nome do aluno</label>
+              <input value={borrowerName} onChange={e=>setBorrowerName(e.target.value)} className="w-full border px-3 py-2 rounded" placeholder="Ex: João Silva" />
+            </div>
+            <div>
+              <label className="text-sm block text-slate-600">Matrícula / ID</label>
+              <input value={borrowerId} onChange={e=>setBorrowerId(e.target.value)} className="w-full border px-3 py-2 rounded" placeholder="Ex: 2023001" />
+            </div>
+            <div>
+              <label className="text-sm block text-slate-600">Data prevista de devolução</label>
+              <input type="date" value={dueDate} onChange={e=>setDueDate(e.target.value)} className="w-full border px-3 py-2 rounded" />
+            </div>
+            <div className="flex items-end gap-2">
+              <button disabled={book.stock<=0 || !borrowerName} onClick={()=>{ onCheckout(book.id, borrowerName, borrowerId, dueDate); setBorrowerName(""); setBorrowerId(""); }} className={"px-4 py-2 rounded "+(book.stock>0? "bg-emerald-600 text-white":"bg-rose-200 text-rose-700 cursor-not-allowed")}>Registrar Empréstimo</button>
+              <button onClick={()=>onChangeStock(book.id, 1)} className="px-3 py-2 rounded border">+1 cópia</button>
+              <button onClick={()=>onChangeStock(book.id, -1)} className="px-3 py-2 rounded border">-1 cópia</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LoansView({ loans, books, onCheckin, onCancel, onExportCSV }){
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-2xl font-semibold">Registros de Empréstimos</h2>
+        <div className="flex gap-2">
+          <button onClick={onExportCSV} className="px-3 py-1 rounded bg-sky-600 text-white">Exportar CSV</button>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto bg-white rounded shadow">
+        <table className="w-full table-auto">
+          <thead className="bg-slate-100 text-left">
+            <tr>
+              <th className="px-3 py-2 text-xs">ID</th>
+              <th className="px-3 py-2 text-xs">Livro</th>
+              <th className="px-3 py-2 text-xs">Aluno</th>
+              <th className="px-3 py-2 text-xs">Início</th>
+              <th className="px-3 py-2 text-xs">Devolução</th>
+              <th className="px-3 py-2 text-xs">Status</th>
+              <th className="px-3 py-2 text-xs">Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loans.map(l=>{
+              const book = books.find(b=>b.id===l.bookId);
+              const overdue = !l.returned && l.due && (new Date(l.due) < new Date());
+              return (
+                <tr key={l.id} className="border-t">
+                  <td className="px-3 py-2 text-sm">{l.id}</td>
+                  <td className="px-3 py-2 text-sm">{book ? book.titulo : l.bookId}</td>
+                  <td className="px-3 py-2 text-sm">{l.borrowerName} <div className="text-xs text-slate-500">{l.borrowerId}</div></td>
+                  <td className="px-3 py-2 text-sm">{formatDate(l.start)}</td>
+                  <td className="px-3 py-2 text-sm">{formatDate(l.due)}</td>
+                  <td className={"px-3 py-2 text-sm " + (l.returned ? "text-emerald-700":"")}>
+                    {l.returned ? "Devolvido em " + formatDate(l.returned) : (overdue ? "Atrasado" : "Emprestado")}
+                  </td>
+                  <td className="px-3 py-2 text-sm">
+                    {!l.returned && <button onClick={()=>onCheckin(l.id)} className="px-2 py-1 mr-2 rounded bg-emerald-600 text-white">Registrar devolução</button>}
+                    <button onClick={()=>onCancel(l.id)} className="px-2 py-1 rounded border">Cancelar</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function AdminView({ books, addBook, changeStock, resetSample, setRoute }){
+  const [manual, setManual] = useState({ titulo:"", autor:"", genero:"", ano:2024, paginas:100, stock:1, cap:"" });
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-semibold">Administração</h2>
+        <div className="flex gap-2">
+          <button className="px-3 py-1 rounded bg-sky-600 text-white" onClick={()=>setRoute("catalog")}>Ver catálogo</button>
+        </div>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-4">
+        <div className="bg-white p-4 rounded shadow">
+          <h3 className="font-medium mb-2">Adicionar livro manualmente</h3>
+          <div className="grid gap-2">
+            <input placeholder="Título" value={manual.titulo} onChange={e=>setManual({...manual, titulo:e.target.value})} className="border px-3 py-2 rounded" />
+            <input placeholder="Autor" value={manual.autor} onChange={e=>setManual({...manual, autor:e.target.value})} className="border px-3 py-2 rounded" />
+            <input placeholder="Gênero" value={manual.genero} onChange={e=>setManual({...manual, genero:e.target.value})} className="border px-3 py-2 rounded" />
+            <div className="flex gap-2">
+              <input type="number" value={manual.ano} onChange={e=>setManual({...manual, ano:parseInt(e.target.value||0)})} className="border px-3 py-2 rounded w-full" />
+              <input type="number" value={manual.paginas} onChange={e=>setManual({...manual, paginas:parseInt(e.target.value||0)})} className="border px-3 py-2 rounded w-full" />
+            </div>
+            <input type="number" value={manual.stock} onChange={e=>setManual({...manual, stock:parseInt(e.target.value||0)})} className="border px-3 py-2 rounded w-32" />
+            <input placeholder="URL da capa (opcional)" value={manual.cap} onChange={e=>setManual({...manual, cap:e.target.value})} className="border px-3 py-2 rounded" />
+            <div className="flex gap-2">
+              <button onClick={()=>{ addBook(manual); setManual({ titulo:"", autor:"", genero:"", ano:2024, paginas:100, stock:1, cap:"" }); }} className="px-4 py-2 rounded bg-emerald-600 text-white">Adicionar</button>
+              <button onClick={()=>resetSample()} className="px-4 py-2 rounded border">Recriar amostra</button>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white p-4 rounded shadow">
+          <h3 className="font-medium mb-2">Estoque rápido (alterar cópias)</h3>
+          <div className="grid gap-2 max-h-96 overflow-auto">
+            {books.slice(0,80).map(b=>(
+              <div key={b.id} className="flex items-center justify-between border-b py-2">
+                <div>
+                  <div className="font-medium text-sm">{b.titulo}</div>
+                  <div className="text-xs text-slate-500">{b.autor} • {b.stock} cópia(s)</div>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={()=>changeStock(b.id, -1)} className="px-2 py-1 rounded border">-</button>
+                  <button onClick={()=>changeStock(b.id, 1)} className="px-2 py-1 rounded border">+</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Render ----------
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+
+    </script>
+  </body>
+</html>
